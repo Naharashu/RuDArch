@@ -1,7 +1,0 @@
-{
-    "name": "RuDArch - Arch Linux",
-    "build": {
-        "dockerfile": "Dockerfile"
-    },
-    "remoteUser": "vscode"
-}
