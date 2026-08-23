@@ -1,0 +1,117 @@
+#!/usr/bin/env bash
+echo "=========================="
+echo "       Welcome to         "
+echo "      RuDArch Linux       "
+echo "=========================="
+
+read -p "Warning: to start installation you need to have internet connection[Type enter to continue]" response
+if [[ -z "$response" ]]
+then
+    echo "Continuing..."
+else
+    echo "Aborted"
+    exit 1
+fi
+
+boot_mode=$( [ -d /sys/firmware/efi ] && echo "UEFI" || echo "BIOS" ) # BIOS or UEFI
+
+read -p "Is you using nvme? (y/n)" is_nvme
+
+if [[ "$is_nvme" == "y" ]]; then
+	if [[ "$boot_mode" == "UEFI" ]]; then
+		TARGET_DISK="/dev/nvme0n1"
+		
+		echo "Formatting $TARGET_DISK... ALL files on drive WILL BE DELETED"
+		read -p "Do you want to continue? (y/n)" continue_
+		
+		if [[ "$continue_" != "y" ]]; then
+			echo "Aborted"
+			exit 1
+		fi
+		
+		parted --script "$TARGET_DISK" mklabel gpt
+		
+		parted --script "$TARGET_DISK" mkpart primary fat32 1MiB 1025MiB
+		parted --script "$TARGET_DISK" set 1 esp on
+		
+		parted --script "$TARGET_DISK" mkpart primary ext4 1025MiB 100%
+		
+		echo "Partitioning complete!"
+		echo "Creating file systems..."
+		mkfs.vfat -F 32 "${TARGET_DISK}p1"
+		mkfs.ext4 -F "${TARGET_DISK}p2"
+	else
+		
+		TARGET_DISK="/dev/nvme0n1"
+		
+		echo "Partitioning $TARGET_DISK using sfdisk... ALL files on drive WILL BE DELETED"
+		read -p "Do you want to continue? (y/n)" continue_
+				
+		if [[ "$continue_" != "y" ]]; then
+			echo "Aborted"
+			exit 1
+		fi
+		
+		sfdisk --delete "$TARGET_DISK"
+		
+		# Format: [start],[size],[type],[bootable]
+		sfdisk "$TARGET_DISK" <<-EOF
+		label: dos
+		,500M,83,*
+		,,83
+		EOF
+		
+		echo "Partitioning complete!"
+		echo "Creating file systems..."
+		mkfs.ext4 -F "${TARGET_DISK}p2"
+	fi	
+else
+if [[ "$boot_mode" == "UEFI" ]]; then
+		TARGET_DISK="/dev/sdb"
+		
+		echo "Formatting $TARGET_DISK... ALL files on drive WILL BE DELETED"
+		read -p "Do you want to continue? (y/n)" continue_
+		
+		if [[ "$continue_" != "y" ]]; then
+			echo "Aborted"
+			exit 1
+		fi
+		
+		parted --script "$TARGET_DISK" mklabel gpt
+		
+		parted --script "$TARGET_DISK" mkpart primary fat32 1MiB 1025MiB
+		parted --script "$TARGET_DISK" set 1 esp on
+		
+		parted --script "$TARGET_DISK" mkpart primary ext4 1025MiB 100%
+		
+		echo "Partitioning complete!"
+		echo "Creating file systems..."
+		mkfs.vfat -F 32 "${TARGET_DISK}1"
+		mkfs.ext4 -F "${TARGET_DISK}2"
+	else
+		
+		TARGET_DISK="/dev/sdb"
+		
+		echo "Partitioning $TARGET_DISK using sfdisk... ALL files on drive WILL BE DELETED"
+		read -p "Do you want to continue? (y/n)" continue_
+				
+		if [[ "$continue_" != "y" ]]; then
+			echo "Aborted"
+			exit 1
+		fi
+		
+		sfdisk --delete "$TARGET_DISK"
+		
+		# Format: [start],[size],[type],[bootable]
+		sfdisk "$TARGET_DISK" <<-EOF
+		label: dos
+		,500M,83,*
+		,,83
+		EOF
+		
+		echo "Partitioning complete!"
+		
+		echo "Creating file systems..."
+		mkfs.ext4 -F "${TARGET_DISK}2"
+	fi	
+fi
