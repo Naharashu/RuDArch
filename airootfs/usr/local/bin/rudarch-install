@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+set -euo pipefail
+
 echo "=========================="
 echo "       Welcome to         "
 echo "      RuDArch Linux       "
@@ -17,9 +19,26 @@ boot_mode=$( [ -d /sys/firmware/efi ] && echo "UEFI" || echo "BIOS" ) # BIOS or 
 
 read -p "Is you using nvme? (y/n)" is_nvme
 
+TARGET_DISK=""
+echo ""
+echo "--- Available Storage Drives ---"
+lsblk -dno NAME,SIZE,MODEL | grep -v 'loop'
+echo "--------------------------------"
+read -p "Enter the target drive name from the list above (e.g., sda, nvme0n1): " raw_disk
+
+TARGET_DISK="/dev/$raw_disk"
+
+if [[ "$TARGET_DISK" == *"nvme"* || "$TARGET_DISK" == *"mmcblk"* || "$TARGET_DISK" == *"vd"* ]]; then
+    PART1="${TARGET_DISK}p1"
+    PART2="${TARGET_DISK}p2"
+else
+    PART1="${TARGET_DISK}1"
+    PART2="${TARGET_DISK}2"
+fi
+
+
 if [[ "$is_nvme" == "y" ]]; then
 	if [[ "$boot_mode" == "UEFI" ]]; then
-		TARGET_DISK="/dev/nvme0n1"
 		
 		echo "Formatting $TARGET_DISK... ALL files on drive WILL BE DELETED"
 		read -p "Do you want to continue? (y/n)" continue_
@@ -42,8 +61,6 @@ if [[ "$is_nvme" == "y" ]]; then
 		mkfs.ext4 -F "${TARGET_DISK}p2"
 	else
 		
-		TARGET_DISK="/dev/nvme0n1"
-		
 		echo "Partitioning $TARGET_DISK using sfdisk... ALL files on drive WILL BE DELETED"
 		read -p "Do you want to continue? (y/n)" continue_
 				
@@ -52,7 +69,7 @@ if [[ "$is_nvme" == "y" ]]; then
 			exit 1
 		fi
 		
-		sfdisk --delete "$TARGET_DISK"
+		dd if=/dev/zero of="$TARGET_DISK" bs=512 count=1 conv=notrunc 2>/dev/null
 		
 		# Format: [start],[size],[type],[bootable]
 		sfdisk "$TARGET_DISK" <<-EOF
@@ -66,8 +83,7 @@ if [[ "$is_nvme" == "y" ]]; then
 		mkfs.ext4 -F "${TARGET_DISK}p2"
 	fi	
 else
-if [[ "$boot_mode" == "UEFI" ]]; then
-		TARGET_DISK="/dev/sdb"
+	if [[ "$boot_mode" == "UEFI" ]]; then
 		
 		echo "Formatting $TARGET_DISK... ALL files on drive WILL BE DELETED"
 		read -p "Do you want to continue? (y/n)" continue_
@@ -90,8 +106,6 @@ if [[ "$boot_mode" == "UEFI" ]]; then
 		mkfs.ext4 -F "${TARGET_DISK}2"
 	else
 		
-		TARGET_DISK="/dev/sdb"
-		
 		echo "Partitioning $TARGET_DISK using sfdisk... ALL files on drive WILL BE DELETED"
 		read -p "Do you want to continue? (y/n)" continue_
 				
@@ -100,7 +114,7 @@ if [[ "$boot_mode" == "UEFI" ]]; then
 			exit 1
 		fi
 		
-		sfdisk --delete "$TARGET_DISK"
+		dd if=/dev/zero of="$TARGET_DISK" bs=512 count=1 conv=notrunc 2>/dev/null
 		
 		# Format: [start],[size],[type],[bootable]
 		sfdisk "$TARGET_DISK" <<-EOF
@@ -115,3 +129,260 @@ if [[ "$boot_mode" == "UEFI" ]]; then
 		mkfs.ext4 -F "${TARGET_DISK}2"
 	fi	
 fi
+
+
+echo "Mounting file systems..."
+
+
+if [[ "$is_nvme" == "y" ]]; then
+    mount "${TARGET_DISK}p2" /mnt
+else
+    mount "${TARGET_DISK}2" /mnt
+fi
+
+if [[ "$boot_mode" == "UEFI" ]]; then
+    echo "Creating boot directory for UEFI..."
+    
+    mkdir -p /mnt/boot
+    
+    if [[ "$is_nvme" == "y" ]]; then
+        mount "${TARGET_DISK}p1" /mnt/boot
+    else
+        mount "${TARGET_DISK}1" /mnt/boot
+    fi
+else
+    echo "BIOS mode detected. No separate boot directory mount needed."
+fi
+
+echo "File systems mounted successfully to /mnt!"
+
+
+echo "Installing Linux-Zen Kernel and firmware into root (/)"
+pacstrap -K /mnt base linux-zen linux-zen-headers linux-firmware
+
+echo "Generating fstab file"
+genfstab -U /mnt >> /mnt/etc/fstab
+
+echo "Setting up system timezone..."
+
+detected_tz=$(curl -s --max-time 3 https://ipapi.co/timezone || echo "Europe/Kyiv")
+
+if [[ "$detected_tz" == *"{"* || "$detected_tz" == *"error"* || -z "$detected_tz" ]]; then
+    timezone="Europe/Kyiv"
+else
+    timezone="$detected_tz"
+fi
+
+echo "Selected timezone: $timezone"
+
+arch-chroot /mnt ln -sf "/usr/share/zoneinfo/$timezone" /etc/localtime
+
+arch-chroot /mnt hwclock --systohc
+
+arch-chroot /mnt systemctl enable systemd-timesyncd.service
+
+
+echo "Configuring locales(English will be added by default)"
+
+arch-chroot /mnt sed -i 's/#en_US.UTF-8 UTF-8/en_US.UTF-8 UTF-8/' /etc/locale.gen
+
+echo "LANG=en_US.UTF-8" > /mnt/etc/locale.conf
+
+TARGET_LANG="none"
+
+echo "Set secondary language"
+
+lang_menu () {
+    options=(
+        "UA"
+        "PL"
+        "FR"
+    )
+    select option in "${options[@]}"; do
+    	case $option in
+            "UA")
+                echo "Secondary language set to Ukrainian"
+                TARGET_LANG="UA"
+                arch-chroot /mnt sed -i 's/#uk_UA.UTF-8 UTF-8/uk_UA.UTF-8 UTF-8/' /etc/locale.gen
+                break ;;
+            "PL")
+                echo "Secondary language set to Polish"
+                TARGET_LANG="PL"
+                arch-chroot /mnt sed -i 's/#pl_PL.UTF-8 UTF-8/pl_PL.UTF-8 UTF-8/' /etc/locale.gen
+                break ;;
+            "FR")
+                echo "Secondary language set to French"
+                TARGET_LANG="FR"
+                arch-chroot /mnt sed -i 's/#fr_FR.UTF-8 UTF-8/fr_FR.UTF-8 UTF-8/' /etc/locale.gen
+                break ;;
+            *) 
+                echo "invalid option" ;;
+        esac
+
+    done
+}
+lang_menu
+
+arch-chroot /mnt locale-gen
+
+read -p "Choose your system hostname: " hostname
+echo "$hostname" > /mnt/etc/hostname
+
+read -p "Choose your login username: " username
+arch-chroot /mnt useradd -m -G wheel,storage,power -s /bin/bash "$username"
+
+echo "Set password for $username:"
+arch-chroot /mnt passwd "$username"
+
+# echo "Copying yay package to /tmp"
+# mkdir -p /mnt/tmp
+# cp /var/cache/pacman/pkg/yay-bin-*.pkg.tar.zst /mnt/tmp/
+
+REPO_BLOCK=$(cat << 'EOF'
+
+[rudarch]
+SigLevel = Optional TrustAll
+Server = file:///opt/localrepo
+EOF
+)
+
+echo "$REPO_BLOCK" >> /etc/pacman.conf
+echo "$REPO_BLOCK" >> /mnt/etc/pacman.conf
+
+pacman -Sy
+
+
+echo "Installing yay into root"
+pacman -r /mnt -S --noconfirm yay-bin
+#arch-chroot /mnt pacman -U --noconfirm /tmp/yay-bin-*.pkg.tar.zst
+
+#echo "Cleaning up /tmp..."
+# rm /mnt/tmp/yay-bin-*.pkg.tar.zst
+
+
+
+CPU=$(lscpu)
+
+if [[ "$CPU" == *"Intel"* ]]; then
+	echo "Installing Intel microcode"
+	pacman -r /mnt --noconfirm -S intel-ucode
+elif [[ "$CPU" == *"AMD"* || "$CPU" == *"Advanced Micro Devices"* ]]; then
+	echo "Installing AMD microcode"
+	pacman -r /mnt --noconfirm -S amd-ucode
+else
+	echo "Unknown cpu. No microcode installed"
+fi
+
+arch-chroot /mnt sed -i '/\[multilib\]/,+1 s/#//' /etc/pacman.conf
+arch-chroot /mnt pacman -Sy
+
+
+
+GPU_LSPCI=$(lspci | grep -Ei 'vga|3d|display')
+
+if [[ "$GPU_LSPCI" == *"NVIDIA"* ]]; then
+	echo "Detected Nvidia GPU, installing drivers..."
+	read -p "Are you using Nvidia GPU newer than GTX 10 series?(y/n)" gtx10_is_newer
+	if [[ "$gtx10_is_newer" == "y" ]]; then
+		pacman -r /mnt --noconfirm -S nvidia-zen nvidia-utils nvidia-settings # GTX 16 and newer
+	else
+		read -p "Are you using Nvidia GPU older than GTX 900 series?(y/n)" gtx900_is_older
+		if [[ "$gtx900_is_older" == "y" ]]; then
+			# for GTX 700 and older
+
+			echo "Installing Nvidia drivers for GTX 600 / GTX 700 from AUR"
+			arch-chroot /mnt useradd -m -g users -s /bin/bash aurhelper
+
+			echo "aurhelper ALL=(ALL) NOPASSWD: ALL" > /mnt/etc/sudoers.d/aurhelper
+
+			arch-chroot /mnt sudo -u aurhelper bash -c "yay -S --noconfirm nvidia-470xx-dkms nvidia-470xx-utils lib32-nvidia-470xx-utils nvidia-470xx-settings"
+
+			rm -f /mnt/etc/sudoers.d/aurhelper
+			arch-chroot /mnt userdel -r aurhelper
+
+
+		else
+			# for GTX 900, 1000
+			echo "Installing Nvidia drivers for GTX 900 / GTX 1000 series from AUR"
+			arch-chroot /mnt useradd -m -g users -s /bin/bash aurhelper
+
+			echo "aurhelper ALL=(ALL) NOPASSWD: ALL" > /mnt/etc/sudoers.d/aurhelper
+
+			arch-chroot /mnt sudo -u aurhelper bash -c "yay -S --noconfirm nvidia-580xx-dkms nvidia-580xx-utils lib32-nvidia-580xx-utils nvidia-580xx-settings"
+
+			rm -f /mnt/etc/sudoers.d/aurhelper
+			arch-chroot /mnt userdel -r aurhelper
+
+		fi
+	fi
+elif [[ "$GPU_LSPCI" == *"AMD"* || "$GPU_LSPCI" == *"Radeon"* ]]; then
+	echo "Detected AMD GPU, installing drivers..."
+	pacman -r /mnt --noconfirm -S mesa vulkan-radeon lib32-mesa lib32-vulkan-radeon libva-mesa-driver libva-utils
+elif [[ "$GPU_LSPCI" == *"Intel"* ]]; then
+	echo "Detected Intel GPU, installing drivers..."
+	pacman -r /mnt --noconfirm -S mesa vulkan-intel lib32-mesa lib32-vulkan-intel intel-media-driver
+else
+	read -p "Detected Unknown or Virtual GPU, do you want to install generic driver?(y/n)" confirm_gpu
+	if [[ "$confirm_gpu" != "y" ]]; then
+		echo "Skipping generic driver installation"
+	else
+		echo "Installing xf86-video-fbdev"
+		pacman -r /mnt --noconfirm -S xf86-video-fbdev
+	fi
+fi
+
+
+
+
+
+
+
+
+
+TARGET_DE="none"
+
+echo "Note: KDE will be installed with Wayland and XFCE4 with X11(Xorg)"
+
+de_menu () {
+    options=(
+        "KDE"
+        "XFCE4"
+        "None"
+    )
+    select option in "${options[@]}"; do
+        case $option in
+            "KDE")
+                TARGET_DE="KDE"
+                break
+            ;;
+            "XFCE4")
+                TARGET_DE="XFCE4"
+                break
+            ;;
+            "None")
+                return
+             ;;
+            *) 
+                echo invalid option
+            ;;
+        esac
+    done
+}
+de_menu
+
+if [[ "$TARGET_DE" == "none" ]]; then
+	echo "Skipping Desktop Enviroment installation..."
+elif [[ "$TARGET_DE" == "KDE" ]]; then
+	# KDE Plasma (Wayland)
+	echo "Installing KDE Plasma (Wayland)"
+else
+	# XFCE4 (X11)
+	echo "Installing XFCE4 (X11)"
+	
+fi
+
+
+
+
+
+

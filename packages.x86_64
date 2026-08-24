@@ -36,7 +36,6 @@ gptfdisk
 grml-zsh-config
 grub
 hdparm
-hyperv
 intel-ucode
 iw
 iwd
@@ -47,8 +46,8 @@ ldns
 less
 libfido2
 libusb-compat
-linux-zen
-linux-zen-headers
+linux
+linux-headers
 linux-atm
 linux-firmware
 livecd-sounds
