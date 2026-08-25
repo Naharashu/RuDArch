@@ -1,12 +1,15 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+echo "export FORMATTED_=\"0\"" >> /.bashrc
+source /.bashrc
+
 echo "=========================="
 echo "       Welcome to         "
 echo "      RuDArch Linux       "
 echo "=========================="
 
-read -p "Warning: to start installation you need to have internet connection[Type enter to continue]" response
+read -p "Warning: to start installation you need to have internet connection(Type enter to continue)" response
 if [[ -z "$response" ]]
 then
     echo "Continuing..."
@@ -17,119 +20,127 @@ fi
 
 boot_mode=$( [ -d /sys/firmware/efi ] && echo "UEFI" || echo "BIOS" ) # BIOS or UEFI
 
-read -p "Is you using nvme? (y/n)" is_nvme
+fs0() {
+	read -p "Is you using nvme? (y/n)" is_nvme
 
-TARGET_DISK=""
-echo ""
-echo "--- Available Storage Drives ---"
-lsblk -dno NAME,SIZE,MODEL | grep -v 'loop'
-echo "--------------------------------"
-read -p "Enter the target drive name from the list above (e.g., sda, nvme0n1): " raw_disk
+	TARGET_DISK=""
+	echo ""
+	echo "--- Available Storage Drives ---"
+	lsblk -dno NAME,SIZE,MODEL | grep -v 'loop'
+	echo "--------------------------------"
+	read -p "Enter the target drive name from the list above (e.g., sda, nvme0n1): " raw_disk
 
-TARGET_DISK="/dev/$raw_disk"
+	TARGET_DISK="/dev/$raw_disk"
 
-if [[ "$TARGET_DISK" == *"nvme"* || "$TARGET_DISK" == *"mmcblk"* || "$TARGET_DISK" == *"vd"* ]]; then
-    PART1="${TARGET_DISK}p1"
-    PART2="${TARGET_DISK}p2"
-else
-    PART1="${TARGET_DISK}1"
-    PART2="${TARGET_DISK}2"
+	if [[ "$TARGET_DISK" == *"nvme"* || "$TARGET_DISK" == *"mmcblk"* || "$TARGET_DISK" == *"vd"* ]]; then
+	    PART1="${TARGET_DISK}p1"
+	    PART2="${TARGET_DISK}p2"
+	else
+	    PART1="${TARGET_DISK}1"
+	    PART2="${TARGET_DISK}2"
+	fi
+
+
+	if [[ "$is_nvme" == "y" ]]; then
+		if [[ "$boot_mode" == "UEFI" ]]; then
+			
+			echo "Formatting $TARGET_DISK... ALL files on drive WILL BE DELETED"
+			read -p "Do you want to continue? (y/n)" continue_
+			
+			if [[ "$continue_" != "y" ]]; then
+				echo "Aborted"
+				exit 1
+			fi
+			
+			parted --script "$TARGET_DISK" mklabel gpt
+			
+			parted --script "$TARGET_DISK" mkpart primary fat32 1MiB 1025MiB
+			parted --script "$TARGET_DISK" set 1 esp on
+			
+			parted --script "$TARGET_DISK" mkpart primary ext4 1025MiB 100%
+			
+			echo "Partitioning complete!"
+			echo "Creating file systems..."
+			mkfs.vfat -F 32 "${TARGET_DISK}p1"
+			mkfs.ext4 -F "${TARGET_DISK}p2"
+		else
+			
+			echo "Partitioning $TARGET_DISK using sfdisk... ALL files on drive WILL BE DELETED"
+			read -p "Do you want to continue? (y/n)" continue_
+					
+			if [[ "$continue_" != "y" ]]; then
+				echo "Aborted"
+				exit 1
+			fi
+			
+			dd if=/dev/zero of="$TARGET_DISK" bs=512 count=1 conv=notrunc 2>/dev/null
+			
+			# Format: [start],[size],[type],[bootable]
+			sfdisk "$TARGET_DISK" <<-EOF
+			label: dos
+			,500M,83,*
+			,,83
+			EOF
+			
+			echo "Partitioning complete!"
+			echo "Creating file systems..."
+			mkfs.ext4 -F "${TARGET_DISK}p2"
+		fi	
+	else
+		if [[ "$boot_mode" == "UEFI" ]]; then
+			
+			echo "Formatting $TARGET_DISK... ALL files on drive WILL BE DELETED"
+			read -p "Do you want to continue? (y/n)" continue_
+			
+			if [[ "$continue_" != "y" ]]; then
+				echo "Aborted"
+				exit 1
+			fi
+			
+			parted --script "$TARGET_DISK" mklabel gpt
+			
+			parted --script "$TARGET_DISK" mkpart primary fat32 1MiB 1025MiB
+			parted --script "$TARGET_DISK" set 1 esp on
+			
+			parted --script "$TARGET_DISK" mkpart primary ext4 1025MiB 100%
+			
+			echo "Partitioning complete!"
+			echo "Creating file systems..."
+			mkfs.vfat -F 32 "${TARGET_DISK}1"
+			mkfs.ext4 -F "${TARGET_DISK}2"
+		else
+			
+			echo "Partitioning $TARGET_DISK using sfdisk... ALL files on drive WILL BE DELETED"
+			read -p "Do you want to continue? (y/n)" continue_
+					
+			if [[ "$continue_" != "y" ]]; then
+				echo "Aborted"
+				exit 1
+			fi
+			
+			dd if=/dev/zero of="$TARGET_DISK" bs=512 count=1 conv=notrunc 2>/dev/null
+			
+			# Format: [start],[size],[type],[bootable]
+			sfdisk "$TARGET_DISK" <<-EOF
+			label: dos
+			,500M,83,*
+			,,83
+			EOF
+			
+			echo "Partitioning complete!"
+			
+			echo "Creating file systems..."
+			mkfs.ext4 -F "${TARGET_DISK}2"
+		fi	
+	fi
+}
+
+
+if [[ "$FORMATTED_" != "1" ]]; then
+	fs0
 fi
 
-
-if [[ "$is_nvme" == "y" ]]; then
-	if [[ "$boot_mode" == "UEFI" ]]; then
-		
-		echo "Formatting $TARGET_DISK... ALL files on drive WILL BE DELETED"
-		read -p "Do you want to continue? (y/n)" continue_
-		
-		if [[ "$continue_" != "y" ]]; then
-			echo "Aborted"
-			exit 1
-		fi
-		
-		parted --script "$TARGET_DISK" mklabel gpt
-		
-		parted --script "$TARGET_DISK" mkpart primary fat32 1MiB 1025MiB
-		parted --script "$TARGET_DISK" set 1 esp on
-		
-		parted --script "$TARGET_DISK" mkpart primary ext4 1025MiB 100%
-		
-		echo "Partitioning complete!"
-		echo "Creating file systems..."
-		mkfs.vfat -F 32 "${TARGET_DISK}p1"
-		mkfs.ext4 -F "${TARGET_DISK}p2"
-	else
-		
-		echo "Partitioning $TARGET_DISK using sfdisk... ALL files on drive WILL BE DELETED"
-		read -p "Do you want to continue? (y/n)" continue_
-				
-		if [[ "$continue_" != "y" ]]; then
-			echo "Aborted"
-			exit 1
-		fi
-		
-		dd if=/dev/zero of="$TARGET_DISK" bs=512 count=1 conv=notrunc 2>/dev/null
-		
-		# Format: [start],[size],[type],[bootable]
-		sfdisk "$TARGET_DISK" <<-EOF
-		label: dos
-		,500M,83,*
-		,,83
-		EOF
-		
-		echo "Partitioning complete!"
-		echo "Creating file systems..."
-		mkfs.ext4 -F "${TARGET_DISK}p2"
-	fi	
-else
-	if [[ "$boot_mode" == "UEFI" ]]; then
-		
-		echo "Formatting $TARGET_DISK... ALL files on drive WILL BE DELETED"
-		read -p "Do you want to continue? (y/n)" continue_
-		
-		if [[ "$continue_" != "y" ]]; then
-			echo "Aborted"
-			exit 1
-		fi
-		
-		parted --script "$TARGET_DISK" mklabel gpt
-		
-		parted --script "$TARGET_DISK" mkpart primary fat32 1MiB 1025MiB
-		parted --script "$TARGET_DISK" set 1 esp on
-		
-		parted --script "$TARGET_DISK" mkpart primary ext4 1025MiB 100%
-		
-		echo "Partitioning complete!"
-		echo "Creating file systems..."
-		mkfs.vfat -F 32 "${TARGET_DISK}1"
-		mkfs.ext4 -F "${TARGET_DISK}2"
-	else
-		
-		echo "Partitioning $TARGET_DISK using sfdisk... ALL files on drive WILL BE DELETED"
-		read -p "Do you want to continue? (y/n)" continue_
-				
-		if [[ "$continue_" != "y" ]]; then
-			echo "Aborted"
-			exit 1
-		fi
-		
-		dd if=/dev/zero of="$TARGET_DISK" bs=512 count=1 conv=notrunc 2>/dev/null
-		
-		# Format: [start],[size],[type],[bootable]
-		sfdisk "$TARGET_DISK" <<-EOF
-		label: dos
-		,500M,83,*
-		,,83
-		EOF
-		
-		echo "Partitioning complete!"
-		
-		echo "Creating file systems..."
-		mkfs.ext4 -F "${TARGET_DISK}2"
-	fi	
-fi
-
+FORMATTED_="1"
 
 echo "Mounting file systems..."
 
@@ -247,13 +258,13 @@ EOF
 )
 
 echo "$REPO_BLOCK" >> /etc/pacman.conf
-echo "$REPO_BLOCK" >> /mnt/etc/pacman.conf
 
-pacman -Sy
+pacman -r /mnt --noconfirm -Sy
 
 
 echo "Installing yay into root"
-pacman -r /mnt -S --noconfirm yay-bin
+pacman -r /mnt --noconfirm -S git
+pacman -r /mnt -U /opt/localrepo/yay-bin-13.0.1-1-x86_64.pkg.tar.zst --noconfirm
 #arch-chroot /mnt pacman -U --noconfirm /tmp/yay-bin-*.pkg.tar.zst
 
 #echo "Cleaning up /tmp..."
@@ -265,10 +276,10 @@ CPU=$(lscpu)
 
 if [[ "$CPU" == *"Intel"* ]]; then
 	echo "Installing Intel microcode"
-	pacman -r /mnt --noconfirm -S intel-ucode
+	arch-chroot /mnt pacman --noconfirm -S intel-ucode
 elif [[ "$CPU" == *"AMD"* || "$CPU" == *"Advanced Micro Devices"* ]]; then
 	echo "Installing AMD microcode"
-	pacman -r /mnt --noconfirm -S amd-ucode
+	arch-chroot /mnt pacman --noconfirm -S amd-ucode
 else
 	echo "Unknown cpu. No microcode installed"
 fi
@@ -284,7 +295,7 @@ if [[ "$GPU_LSPCI" == *"NVIDIA"* ]]; then
 	echo "Detected Nvidia GPU, installing drivers..."
 	read -p "Are you using Nvidia GPU newer than GTX 10 series?(y/n)" gtx10_is_newer
 	if [[ "$gtx10_is_newer" == "y" ]]; then
-		pacman -r /mnt --noconfirm -S nvidia-zen nvidia-utils nvidia-settings # GTX 16 and newer
+		arch-chroot /mnt pacman --noconfirm -S nvidia-zen nvidia-utils nvidia-settings # GTX 16 and newer
 	else
 		read -p "Are you using Nvidia GPU older than GTX 900 series?(y/n)" gtx900_is_older
 		if [[ "$gtx900_is_older" == "y" ]]; then
@@ -317,17 +328,17 @@ if [[ "$GPU_LSPCI" == *"NVIDIA"* ]]; then
 	fi
 elif [[ "$GPU_LSPCI" == *"AMD"* || "$GPU_LSPCI" == *"Radeon"* ]]; then
 	echo "Detected AMD GPU, installing drivers..."
-	pacman -r /mnt --noconfirm -S mesa vulkan-radeon lib32-mesa lib32-vulkan-radeon libva-mesa-driver libva-utils
+	arch-chroot /mnt pacman --noconfirm -S mesa vulkan-radeon lib32-mesa lib32-vulkan-radeon libva-mesa-driver libva-utils
 elif [[ "$GPU_LSPCI" == *"Intel"* ]]; then
 	echo "Detected Intel GPU, installing drivers..."
-	pacman -r /mnt --noconfirm -S mesa vulkan-intel lib32-mesa lib32-vulkan-intel intel-media-driver
+	arch-chroot /mnt pacman --noconfirm -S mesa vulkan-intel lib32-mesa lib32-vulkan-intel intel-media-driver
 else
 	read -p "Detected Unknown or Virtual GPU, do you want to install generic driver?(y/n)" confirm_gpu
 	if [[ "$confirm_gpu" != "y" ]]; then
 		echo "Skipping generic driver installation"
 	else
 		echo "Installing xf86-video-fbdev"
-		pacman -r /mnt --noconfirm -S xf86-video-fbdev
+		arch-chroot /mnt pacman --noconfirm-S xf86-video-fbdev
 	fi
 fi
 
@@ -382,7 +393,7 @@ else
 fi
 
 
+umount -R /mnt
 
-
-
+echo "INSTALLATION FINISHED. PLEASE REBOOT YOUR PC WITH 'reboot'"
 
