@@ -338,13 +338,62 @@ else
 		echo "Skipping generic driver installation"
 	else
 		echo "Installing xf86-video-fbdev"
-		arch-chroot /mnt pacman --noconfirm-S xf86-video-fbdev
+		arch-chroot /mnt pacman --noconfirm -S xf86-video-fbdev
 	fi
 fi
 
 
 
 
+read -p "Do you want use Grub or systemd-boot(UEFI only) as bootloader?(0-grub/1-systemd)" grub_
+if [[ "$grub_" != "0" ]]; then
+	# systemd-boot
+	arch-chroot /mnt bootctl install
+	
+	if [[ "$is_nvme" == "y" ]]; then
+		ROOT_UUID=$(blkid -s UUID -o value "${TARGET_DISK}p2")
+	else
+		ROOT_UUID=$(blkid -s UUID -o value "${TARGET_DISK}2")
+	fi
+
+
+cat <<EOF > /mnt/boot/loader/loader.conf
+default  arch.conf
+timeout  4
+console-mode max
+editor   no
+EOF
+
+cat <<EOF > /mnt/boot/loader/entries/arch.conf
+title   RuDArch Linux (Zen)
+linux   /vmlinuz-linux-zen
+EOF
+
+	if [[ "$CPU" == *"Intel"* ]]; then
+		echo "initrd  /intel-ucode.img" >> /mnt/boot/loader/entries/arch.conf
+	elif [[ "$CPU" == *"AMD"* || "$CPU" == *"Advanced Micro Devices"* ]]; then
+		echo "initrd  /amd-ucode.img" >> /mnt/boot/loader/entries/arch.conf
+	fi
+
+cat <<EOF >> /mnt/boot/loader/entries/arch.conf
+initrd  /initramfs-linux-zen.img
+options root=UUID=$ROOT_UUID rw
+EOF
+
+else
+	# grub
+	arch-chroot /mnt pacman --noconfirm -S grub
+	if [[ "$boot_mode" == "UEFI" ]]; then
+		arch-chroot /mnt pacman --noconfirm -S efibootmgr
+		arch-chroot /mnt grub-install --target=x86_64-efi --efi-directory=/boot --bootloader-id=GRUB
+	else
+		# BIOS
+		CLEAN_DISK=$(echo "$TARGET_DISK" | sed 's/p[0-9]$//;s/[0-9]$//')
+		arch-chroot /mnt grub-install --target=i386-pc "$CLEAN_DISK"
+	fi
+
+	arch-chroot /mnt grub-mkconfig -o /boot/grub/grub.cfg
+fi
 
 
 
@@ -386,12 +435,62 @@ if [[ "$TARGET_DE" == "none" ]]; then
 elif [[ "$TARGET_DE" == "KDE" ]]; then
 	# KDE Plasma (Wayland)
 	echo "Installing KDE Plasma (Wayland)"
+	read -p "Do you want full KDE suite?(y/n)" kde_yn
+	if [[ kde_yn != "y" ]]; then
+		"Installing basic KDE Plasma"
+		arch-chroot /mnt pacman --noconfirm -S plasma
+	else
+		arch-chroot /mnt pacman --noconfirm-S plasma kde-applications
+	fi
+	arch-chroot /mnt systemctl enable sddm.service
+	echo "KDE Plasma installed"
 else
 	# XFCE4 (X11)
 	echo "Installing XFCE4 (X11)"
-	
+	arch-chroot /mnt pacman --noconfirm -S xfce4 xfce4-goodies xorg lightdm lightdm-gtk-greeter
+	arch-chroot /mnt systemctl enable lightdm.service
+	echo "XFCE4 installed"
 fi
 
+
+echo "Choose profile"
+echo "Programmer: clang, go, nodejs, codeoss, make, cmake"
+echo "Gamer: steam, flatpak, gamemode"
+echo "None: nothing" 
+
+prof_menu () {
+    options=(
+        "Programmer"
+        "Gamer"
+	"Programmer and gamer"
+        "None"
+    )
+    select option in "${options[@]}"; do
+        case $option in
+            "Programmer")
+                arch-chroot /mnt pacman --noconfirm -S clang go nodejs code make cmake
+                break
+            ;;
+            "Gamer")
+                arch-chroot /mnt pacman --noconfirm -S steam flatpak gamemode
+                break
+            ;;
+	    "Programmer and gamer")
+		arch-chroot /mnt pacman --noconfirm -S steam flatpak gamemode nodejs clang go code make cmake
+                break
+             ;;
+            "None")
+                return
+             ;;
+            *) 
+                echo invalid option
+            ;;
+        esac
+    done
+}
+prof_menu
+
+arch-chroot /mnt systemctl enable NetworkManager.service
 
 umount -R /mnt
 
