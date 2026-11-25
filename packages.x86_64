@@ -8,7 +8,7 @@ bcachefs-tools
 bind
 bolt
 brltty
-broadcom-wl
+networkmanager
 btrfs-progs
 cryptsetup
 darkhttpd
@@ -46,8 +46,8 @@ ldns
 less
 libfido2
 libusb-compat
-linux
-linux-headers
+linux-zen
+linux-zen-headers
 linux-atm
 linux-firmware
 livecd-sounds

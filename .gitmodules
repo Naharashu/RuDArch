@@ -1,0 +1,6 @@
+[submodule "site/themes/vitis"]
+	path = site/themes/vitis
+	url = https://github.com/mohamedelhefni/vitis
+[submodule "site/themes/hugo-primer-blog"]
+	path = site/themes/hugo-primer-blog
+	url = https://github.com/ngs/hugo-primer-blog.git

@@ -1,17 +1,13 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-echo "export FORMATTED_=\"0\"" >> /.bashrc
-source /.bashrc
-
 echo "=========================="
 echo "       Welcome to         "
 echo "      RuDArch Linux       "
 echo "=========================="
 
-read -p "Warning: to start installation you need to have internet connection(Type enter to continue)" response
-if [[ -z "$response" ]]
-then
+read -rp "Warning: to start installation you need to have internet connection (Type enter to continue) " response
+if [[ -z "$response" ]]; then
     echo "Continuing..."
 else
     echo "Aborted"
@@ -19,480 +15,756 @@ else
 fi
 
 boot_mode=$( [ -d /sys/firmware/efi ] && echo "UEFI" || echo "BIOS" ) # BIOS or UEFI
+WALLPAPER=/usr/share/backgrounds/image.png
 
-fs0() {
-	read -p "Is you using nvme? (y/n)" is_nvme
+TARGET_DISK=""
+PART1=""
+PART2=""
 
-	TARGET_DISK=""
-	echo ""
-	echo "--- Available Storage Drives ---"
-	lsblk -dno NAME,SIZE,MODEL | grep -v 'loop'
-	echo "--------------------------------"
-	read -p "Enter the target drive name from the list above (e.g., sda, nvme0n1): " raw_disk
+# Filled by lang_menu
+SYS_LOCALE="en_US.UTF-8"
+EXTRA_LC_TIME=""
+CONSOLE_FONT=""
+FF_I18N=""
+KB_LAYOUTS="us"
+KB_OPTIONS="grp:alt_shift_toggle"
 
-	TARGET_DISK="/dev/$raw_disk"
-
-	if [[ "$TARGET_DISK" == *"nvme"* || "$TARGET_DISK" == *"mmcblk"* || "$TARGET_DISK" == *"vd"* ]]; then
-	    PART1="${TARGET_DISK}p1"
-	    PART2="${TARGET_DISK}p2"
-	else
-	    PART1="${TARGET_DISK}1"
-	    PART2="${TARGET_DISK}2"
-	fi
-
-
-	if [[ "$is_nvme" == "y" ]]; then
-		if [[ "$boot_mode" == "UEFI" ]]; then
-			
-			echo "Formatting $TARGET_DISK... ALL files on drive WILL BE DELETED"
-			read -p "Do you want to continue? (y/n)" continue_
-			
-			if [[ "$continue_" != "y" ]]; then
-				echo "Aborted"
-				exit 1
-			fi
-			
-			parted --script "$TARGET_DISK" mklabel gpt
-			
-			parted --script "$TARGET_DISK" mkpart primary fat32 1MiB 1025MiB
-			parted --script "$TARGET_DISK" set 1 esp on
-			
-			parted --script "$TARGET_DISK" mkpart primary ext4 1025MiB 100%
-			
-			echo "Partitioning complete!"
-			echo "Creating file systems..."
-			mkfs.vfat -F 32 "${TARGET_DISK}p1"
-			mkfs.ext4 -F "${TARGET_DISK}p2"
-		else
-			
-			echo "Partitioning $TARGET_DISK using sfdisk... ALL files on drive WILL BE DELETED"
-			read -p "Do you want to continue? (y/n)" continue_
-					
-			if [[ "$continue_" != "y" ]]; then
-				echo "Aborted"
-				exit 1
-			fi
-			
-			dd if=/dev/zero of="$TARGET_DISK" bs=512 count=1 conv=notrunc 2>/dev/null
-			
-			# Format: [start],[size],[type],[bootable]
-			sfdisk "$TARGET_DISK" <<-EOF
-			label: dos
-			,500M,83,*
-			,,83
-			EOF
-			
-			echo "Partitioning complete!"
-			echo "Creating file systems..."
-			mkfs.ext4 -F "${TARGET_DISK}p2"
-		fi	
-	else
-		if [[ "$boot_mode" == "UEFI" ]]; then
-			
-			echo "Formatting $TARGET_DISK... ALL files on drive WILL BE DELETED"
-			read -p "Do you want to continue? (y/n)" continue_
-			
-			if [[ "$continue_" != "y" ]]; then
-				echo "Aborted"
-				exit 1
-			fi
-			
-			parted --script "$TARGET_DISK" mklabel gpt
-			
-			parted --script "$TARGET_DISK" mkpart primary fat32 1MiB 1025MiB
-			parted --script "$TARGET_DISK" set 1 esp on
-			
-			parted --script "$TARGET_DISK" mkpart primary ext4 1025MiB 100%
-			
-			echo "Partitioning complete!"
-			echo "Creating file systems..."
-			mkfs.vfat -F 32 "${TARGET_DISK}1"
-			mkfs.ext4 -F "${TARGET_DISK}2"
-		else
-			
-			echo "Partitioning $TARGET_DISK using sfdisk... ALL files on drive WILL BE DELETED"
-			read -p "Do you want to continue? (y/n)" continue_
-					
-			if [[ "$continue_" != "y" ]]; then
-				echo "Aborted"
-				exit 1
-			fi
-			
-			dd if=/dev/zero of="$TARGET_DISK" bs=512 count=1 conv=notrunc 2>/dev/null
-			
-			# Format: [start],[size],[type],[bootable]
-			sfdisk "$TARGET_DISK" <<-EOF
-			label: dos
-			,500M,83,*
-			,,83
-			EOF
-			
-			echo "Partitioning complete!"
-			
-			echo "Creating file systems..."
-			mkfs.ext4 -F "${TARGET_DISK}2"
-		fi	
-	fi
+# Arrow-key menu (cyclic): Up/Down (or k/j) move and wrap around, Enter selects.
+# Usage: arrow_menu "Prompt" "option 1" "option 2" ...
+# Result: MENU_CHOICE = 0-based index of the chosen option
+MENU_CHOICE=0
+_menu_draw() {
+    local selected="$1"; shift
+    local -a opts=("$@")
+    local i
+    for i in "${!opts[@]}"; do
+        if [[ "$i" -eq "$selected" ]]; then
+            printf '\033[2K\r  \033[1;38;2;232;108;47m> %s\033[0m\n' "${opts[$i]}"
+        else
+            printf '\033[2K\r    %s\n' "${opts[$i]}"
+        fi
+    done
 }
 
+arrow_menu() {
+    local prompt="$1"; shift
+    local -a options=("$@")
+    local count=${#options[@]}
+    local selected=0 key rest
 
-if [[ "$FORMATTED_" != "1" ]]; then
-	fs0
-fi
+    echo ""
+    echo "$prompt"
+    echo "(Up/Down arrows to move, Enter to select)"
+    printf '\033[?25l'
+    _menu_draw "$selected" "${options[@]}"
+    while true; do
+        key=""
+        IFS= read -rsn1 key || { printf '\033[?25h'; echo "Input closed"; exit 1; }
+        if [[ "$key" == $'\x1b' ]]; then
+            rest=""
+            read -rsn2 -t 0.1 rest || true
+            key+="$rest"
+        fi
+        case "$key" in
+            $'\x1b[A'|$'\x1bOA'|k) selected=$(( (selected + count - 1) % count )) ;;
+            $'\x1b[B'|$'\x1bOB'|j) selected=$(( (selected + 1) % count )) ;;
+            "") break ;;
+        esac
+        printf '\033[%dA' "$count"
+        _menu_draw "$selected" "${options[@]}"
+    done
+    printf '\033[?25h'
+    MENU_CHOICE=$selected
+    echo "Selected: ${options[$selected]}"
+}
 
-FORMATTED_="1"
+select_disk() {
+    echo ""
+    echo "--- Available Storage Drives ---"
+    lsblk -dno NAME,SIZE,MODEL | grep -v 'loop' || true
+    echo "--------------------------------"
+    while true; do
+        read -rp "Enter the target drive name from the list above (e.g., sda, nvme0n1, vda): " raw_disk
+        TARGET_DISK="/dev/$raw_disk"
+        if [[ -b "$TARGET_DISK" ]]; then
+            break
+        fi
+        echo "Device $TARGET_DISK does not exist, try again"
+    done
+
+    # nvme0n1 -> nvme0n1p1, mmcblk0 -> mmcblk0p1, sda -> sda1, vda -> vda1
+    local sep=""
+    if [[ "$raw_disk" =~ [0-9]$ ]]; then
+        sep="p"
+    fi
+    PART1="${TARGET_DISK}${sep}1"
+    PART2="${TARGET_DISK}${sep}2"
+}
+
+# Leftovers from an interrupted previous run (mounted /mnt, old signatures)
+cleanup_previous_run() {
+    echo "Cleaning up leftovers from a previous run..."
+    if mountpoint -q /mnt; then
+        umount -R /mnt 2>/dev/null || umount -Rl /mnt 2>/dev/null || true
+    fi
+    local p
+    for p in $(lsblk -lnpo NAME "$TARGET_DISK" | tail -n +2); do
+        umount -R "$p" 2>/dev/null || umount -l "$p" 2>/dev/null || true
+        wipefs -af "$p" 2>/dev/null || true
+    done
+}
+
+partition_disk() {
+    echo "Formatting $TARGET_DISK... ALL files on drive WILL BE DELETED"
+    read -rp "Do you want to continue? (y/n) " continue_
+    if [[ "$continue_" != "y" ]]; then
+        echo "Aborted"
+        exit 1
+    fi
+
+    cleanup_previous_run
+
+    wipefs -af "$TARGET_DISK"
+
+    if [[ "$boot_mode" == "UEFI" ]]; then
+        parted --script "$TARGET_DISK" mklabel gpt
+        parted --script "$TARGET_DISK" mkpart primary fat32 1MiB 1025MiB
+        parted --script "$TARGET_DISK" set 1 esp on
+        parted --script "$TARGET_DISK" mkpart primary ext4 1025MiB 100%
+    else
+        # Format: [start],[size],[type],[bootable]
+        printf 'label: dos\n,1000M,83,*\n,,83\n' | sfdisk "$TARGET_DISK"
+    fi
+
+    partprobe "$TARGET_DISK" || true
+    udevadm settle
+    sleep 1
+
+    echo "Partitioning complete!"
+    echo "Creating file systems..."
+    if [[ "$boot_mode" == "UEFI" ]]; then
+        mkfs.vfat -F 32 "$PART1"
+    fi
+    mkfs.ext4 -F "$PART2"
+}
+
+select_disk
+partition_disk
 
 echo "Mounting file systems..."
-
-
-if [[ "$is_nvme" == "y" ]]; then
-    mount "${TARGET_DISK}p2" /mnt
-else
-    mount "${TARGET_DISK}2" /mnt
-fi
+mount "$PART2" /mnt
 
 if [[ "$boot_mode" == "UEFI" ]]; then
     echo "Creating boot directory for UEFI..."
-    
     mkdir -p /mnt/boot
-    
-    if [[ "$is_nvme" == "y" ]]; then
-        mount "${TARGET_DISK}p1" /mnt/boot
-    else
-        mount "${TARGET_DISK}1" /mnt/boot
-    fi
+    mount "$PART1" /mnt/boot
 else
     echo "BIOS mode detected. No separate boot directory mount needed."
 fi
 
 echo "File systems mounted successfully to /mnt!"
 
-
 echo "Installing Linux-Zen Kernel and firmware into root (/)"
-pacstrap -K /mnt base linux-zen linux-zen-headers linux-firmware
+pacstrap -K /mnt base linux-zen linux-zen-headers linux-firmware base-devel sudo git dosfstools fastfetch wget curl zip unzip bluez bluez-utils
 
 echo "Generating fstab file"
 genfstab -U /mnt >> /mnt/etc/fstab
 
+echo "Applying RuDArch branding..."
+install -d /mnt/usr/share/rudarch /mnt/etc/pacman.d/hooks
+cat > /mnt/usr/share/rudarch/os-release <<'EOF'
+NAME="RuDArch Linux"
+PRETTY_NAME="RuDArch Linux"
+ID=rudarch
+ID_LIKE=arch
+BUILD_ID=rolling
+ANSI_COLOR="38;2;232;108;47"
+HOME_URL="https://github.com/Naharashu/RuDArch"
+LOGO=rudarch
+EOF
+# /etc/os-release is a symlink to /usr/lib/os-release owned by `filesystem`
+rm -f /mnt/etc/os-release
+install -m 644 /mnt/usr/share/rudarch/os-release /mnt/etc/os-release
+echo 'RuDArch Linux \r (\l)' > /mnt/etc/issue
+
+# Logo: icon for DEs / os-release LOGO=rudarch, plus a text logo for fastfetch
+if [[ -f /usr/share/pixmaps/rudarch.png ]]; then
+    install -Dm 644 /usr/share/pixmaps/rudarch.png /mnt/usr/share/pixmaps/rudarch.png
+fi
+cat > /mnt/usr/share/rudarch/logo.txt <<'EOF'
+$1                   +
+                  +@#
+                 :@@@+
+                .@@@@@:
+               .@@@@@@@:
+               #@@@@@@@@.
+              +:+@@@@@@@@.
+             #@@@##@@@@@@@.
+            #@@@@@@@@@@@@@@:
+           #@@@@@@@@@@@@@@@@:
+          @@@@@@@@@@@@@@@@@@@:
+         @@@@@@@@@+++@@@@@@@@@:
+        @@@@@@@@+     :@@@@@@@@+
+      .@@@@@@@@#       +@@@@@@@@+
+     .@@@@@@@@@.        @@@@@@##@#
+    .@@@@@@@@@@.        @@@@@@@@#:
+   :@@@@@@@@#++.        ++#@@@@@@@@+
+  :@@@@#+:                   .:#@@@@@
+ :@#+.                            :+@@.
+.:                                   .:
+EOF
+
+# NOTE: if the config has no "modules" array, fastfetch prints only the logo,
+# so the module list must be defined explicitly.
+install -d /mnt/etc/xdg/fastfetch
+cat > /mnt/etc/xdg/fastfetch/config.jsonc <<'EOF'
+{
+    "$schema": "https://github.com/fastfetch-cli/fastfetch/raw/dev/doc/json_schema.json",
+    "logo": {
+        "type": "file",
+        "source": "/usr/share/rudarch/logo.txt",
+        "color": { "1": "38;2;232;108;47" },
+        "padding": { "right": 3 }
+    },
+    "display": {
+        "separator": " -> ",
+        "color": {
+            "keys": "38;2;232;108;47",
+            "title": "38;2;232;108;47"
+        }
+    },
+    "modules": [
+        "title",
+        "separator",
+        "os",
+        "host",
+        "kernel",
+        "uptime",
+        "packages",
+        "shell",
+        "display",
+        "de",
+        "wm",
+        "terminal",
+        "cpu",
+        "gpu",
+        "memory",
+        "swap",
+        "disk",
+        "localip",
+        "locale",
+        "break",
+        "colors"
+    ]
+}
+EOF
+
+# `filesystem` upgrades would restore the Arch os-release, so re-apply it
+cat > /mnt/etc/pacman.d/hooks/rudarch-os-release.hook <<'EOF'
+[Trigger]
+Operation = Install
+Operation = Upgrade
+Type = Package
+Target = filesystem
+
+[Action]
+Description = Restoring RuDArch os-release...
+When = PostTransaction
+Exec = /usr/bin/install -m 644 /usr/share/rudarch/os-release /etc/os-release
+EOF
+
 echo "Setting up system timezone..."
 
-detected_tz=$(curl -s --max-time 3 https://ipapi.co/timezone || echo "Europe/Kyiv")
-
-if [[ "$detected_tz" == *"{"* || "$detected_tz" == *"error"* || -z "$detected_tz" ]]; then
+timezone=$(curl -s --max-time 3 https://ipapi.co/timezone || true)
+if [[ -z "$timezone" || ! -f "/usr/share/zoneinfo/$timezone" ]]; then
     timezone="Europe/Kyiv"
-else
-    timezone="$detected_tz"
 fi
 
 echo "Selected timezone: $timezone"
 
 arch-chroot /mnt ln -sf "/usr/share/zoneinfo/$timezone" /etc/localtime
-
-arch-chroot /mnt hwclock --systohc
-
+arch-chroot /mnt hwclock --systohc || echo "Warning: hwclock failed (virtual machine?), continuing"
 arch-chroot /mnt systemctl enable systemd-timesyncd.service
 
-
-echo "Configuring locales(English will be added by default)"
-
-arch-chroot /mnt sed -i 's/#en_US.UTF-8 UTF-8/en_US.UTF-8 UTF-8/' /etc/locale.gen
-
-echo "LANG=en_US.UTF-8" > /mnt/etc/locale.conf
-
-TARGET_LANG="none"
-
-echo "Set secondary language"
-
 lang_menu () {
-    options=(
-        "UA"
-        "PL"
-        "FR"
-    )
-    select option in "${options[@]}"; do
-    	case $option in
-            "UA")
-                echo "Secondary language set to Ukrainian"
-                TARGET_LANG="UA"
-                arch-chroot /mnt sed -i 's/#uk_UA.UTF-8 UTF-8/uk_UA.UTF-8 UTF-8/' /etc/locale.gen
-                break ;;
-            "PL")
-                echo "Secondary language set to Polish"
-                TARGET_LANG="PL"
-                arch-chroot /mnt sed -i 's/#pl_PL.UTF-8 UTF-8/pl_PL.UTF-8 UTF-8/' /etc/locale.gen
-                break ;;
-            "FR")
-                echo "Secondary language set to French"
-                TARGET_LANG="FR"
-                arch-chroot /mnt sed -i 's/#fr_FR.UTF-8 UTF-8/fr_FR.UTF-8 UTF-8/' /etc/locale.gen
-                break ;;
-            *) 
-                echo "invalid option" ;;
-        esac
-
-    done
+    arrow_menu "Choose system language (it will be the primary system language; English stays available)" \
+        "UA" "PL" "FR" "EN"
+    case $MENU_CHOICE in
+        0)
+            echo "System language set to Ukrainian"
+            SYS_LOCALE="uk_UA.UTF-8"
+            CONSOLE_FONT="cyr-sun16"
+            FF_I18N="firefox-i18n-uk"
+            KB_LAYOUTS="us,ua" ;;
+        1)
+            echo "System language set to Polish"
+            SYS_LOCALE="pl_PL.UTF-8"
+            CONSOLE_FONT="lat2-16"
+            FF_I18N="firefox-i18n-pl"
+            KB_LAYOUTS="us,pl" ;;
+        2)
+            echo "System language set to French"
+            SYS_LOCALE="fr_FR.UTF-8"
+            FF_I18N="firefox-i18n-fr"
+            KB_LAYOUTS="us,fr" ;;
+        3)
+            echo "System language set to English (24-hour time)"
+            SYS_LOCALE="en_US.UTF-8"
+            EXTRA_LC_TIME="en_GB.UTF-8"   # en_US uses AM/PM, en_GB uses 18:30
+            KB_LAYOUTS="us" ;;
+    esac
 }
 lang_menu
 
+# Always generate English, plus the chosen locale (and en_GB for 24h time in English)
+arch-chroot /mnt sed -i 's/^#\(en_US\.UTF-8 UTF-8\)/\1/' /etc/locale.gen
+if [[ "$SYS_LOCALE" != "en_US.UTF-8" ]]; then
+    arch-chroot /mnt sed -i "s/^#\(${SYS_LOCALE//./\\.} UTF-8\)/\1/" /etc/locale.gen
+fi
+if [[ -n "$EXTRA_LC_TIME" ]]; then
+    arch-chroot /mnt sed -i "s/^#\(${EXTRA_LC_TIME//./\\.} UTF-8\)/\1/" /etc/locale.gen
+fi
 arch-chroot /mnt locale-gen
 
-read -p "Choose your system hostname: " hostname
-echo "$hostname" > /mnt/etc/hostname
+# System-wide locale = the one the user picked.
+# uk_UA / pl_PL / fr_FR all use the 24-hour clock (18:30).
+{
+    echo "LANG=${SYS_LOCALE}"
+    if [[ -n "$EXTRA_LC_TIME" ]]; then
+        echo "LC_TIME=${EXTRA_LC_TIME}"
+    fi
+} > /mnt/etc/locale.conf
 
-read -p "Choose your login username: " username
+# Console font so Cyrillic / Polish letters are readable in the TTY
+if [[ -n "$CONSOLE_FONT" ]]; then
+    echo "FONT=${CONSOLE_FONT}" > /mnt/etc/vconsole.conf
+fi
+
+# Keyboard layouts: X11 (XFCE, display managers) and KDE Plasma (Wayland)
+# Switch layout with Alt+Shift
+install -d /mnt/etc/X11/xorg.conf.d /mnt/etc/xdg
+cat > /mnt/etc/X11/xorg.conf.d/00-keyboard.conf <<EOF
+Section "InputClass"
+    Identifier "system-keyboard"
+    MatchIsKeyboard "on"
+    Option "XkbLayout" "${KB_LAYOUTS}"
+    Option "XkbOptions" "${KB_OPTIONS}"
+EndSection
+EOF
+
+cat > /mnt/etc/xdg/kxkbrc <<EOF
+[Layout]
+LayoutList=${KB_LAYOUTS}
+Use=true
+Options=${KB_OPTIONS}
+ResetOldOptions=true
+EOF
+
+read -rp "Choose your system hostname: " host_name
+echo "$host_name" > /mnt/etc/hostname
+
+read -rp "Choose your login username: " username
 arch-chroot /mnt useradd -m -G wheel,storage,power -s /bin/bash "$username"
 
 echo "Set password for $username:"
-arch-chroot /mnt passwd "$username"
+until arch-chroot /mnt passwd "$username"; do echo "Try again"; done
 
-# echo "Copying yay package to /tmp"
-# mkdir -p /mnt/tmp
-# cp /var/cache/pacman/pkg/yay-bin-*.pkg.tar.zst /mnt/tmp/
+echo "Set password for root:"
+until arch-chroot /mnt passwd; do echo "Try again"; done
 
-REPO_BLOCK=$(cat << 'EOF'
-
-[rudarch]
-SigLevel = Optional TrustAll
-Server = file:///opt/localrepo
-EOF
-)
-
-echo "$REPO_BLOCK" >> /etc/pacman.conf
-
-pacman -r /mnt --noconfirm -Sy
-
+echo '%wheel ALL=(ALL:ALL) ALL' > /mnt/etc/sudoers.d/10-wheel
+chmod 440 /mnt/etc/sudoers.d/10-wheel
 
 echo "Installing yay into root"
-pacman -r /mnt --noconfirm -S git
-pacman -r /mnt -U /opt/localrepo/yay-bin-13.0.1-1-x86_64.pkg.tar.zst --noconfirm
-#arch-chroot /mnt pacman -U --noconfirm /tmp/yay-bin-*.pkg.tar.zst
+yay_pkg=$(ls /opt/localrepo/yay-bin-*.pkg.tar.zst 2>/dev/null | sort -V | tail -n1 || true)
+if [[ -z "$yay_pkg" ]]; then
+    echo "ERROR: yay-bin package not found in /opt/localrepo"
+    exit 1
+fi
+# NOTE: arch-chroot mounts a fresh tmpfs over /tmp, so don't stage files there
+mkdir -p /mnt/var/tmp
+cp "$yay_pkg" /mnt/var/tmp/
+arch-chroot /mnt pacman -U --noconfirm "/var/tmp/$(basename "$yay_pkg")"
+rm -f /mnt/var/tmp/yay-bin-*.pkg.tar.zst
 
-#echo "Cleaning up /tmp..."
-# rm /mnt/tmp/yay-bin-*.pkg.tar.zst
-
-
-
-CPU=$(lscpu)
-
-if [[ "$CPU" == *"Intel"* ]]; then
-	echo "Installing Intel microcode"
-	arch-chroot /mnt pacman --noconfirm -S intel-ucode
-elif [[ "$CPU" == *"AMD"* || "$CPU" == *"Advanced Micro Devices"* ]]; then
-	echo "Installing AMD microcode"
-	arch-chroot /mnt pacman --noconfirm -S amd-ucode
+# CPU microcode
+UCODE=""
+if grep -q GenuineIntel /proc/cpuinfo; then
+    echo "Installing Intel microcode"
+    UCODE="intel-ucode"
+elif grep -q AuthenticAMD /proc/cpuinfo; then
+    echo "Installing AMD microcode"
+    UCODE="amd-ucode"
 else
-	echo "Unknown cpu. No microcode installed"
+    echo "Unknown cpu. No microcode installed"
+fi
+if [[ -n "$UCODE" ]]; then
+    arch-chroot /mnt pacman --noconfirm -S "$UCODE"
 fi
 
-arch-chroot /mnt sed -i '/\[multilib\]/,+1 s/#//' /etc/pacman.conf
+# Enable multilib
+arch-chroot /mnt sed -i '/^#\[multilib\]/,+1 s/^#//' /etc/pacman.conf
 arch-chroot /mnt pacman -Sy
 
+# Temporary user for AUR builds (removed at the end)
+arch-chroot /mnt useradd -m -g users -s /bin/bash aurhelper
+echo "aurhelper ALL=(ALL) NOPASSWD: ALL" > /mnt/etc/sudoers.d/aurhelper
+chmod 440 /mnt/etc/sudoers.d/aurhelper
 
+aur_install() {
+    arch-chroot /mnt sudo -H -u aurhelper yay -S --noconfirm --needed "$@"
+}
 
-GPU_LSPCI=$(lspci | grep -Ei 'vga|3d|display')
+nvidia_menu() {
+    echo ""
+    echo "(Quadro: M-series = Maxwell, P-series = Pascal, T-series / RTX = Turing and newer)"
+    arrow_menu "Which NVIDIA GPU do you have?" \
+        "RTX 20/30/40/50, GTX 16 series (Turing and newer)" \
+        "GTX 750 / 900 / 10 series, Titan V (Maxwell, Pascal, Volta)" \
+        "GTX 600 / 700 series (Kepler)" \
+        "Older or not sure (open-source nouveau)"
+    case $MENU_CHOICE in
+        0)
+            echo "Installing nvidia-open-dkms (Turing and newer)"
+            arch-chroot /mnt pacman --noconfirm -S nvidia-open-dkms nvidia-utils lib32-nvidia-utils nvidia-settings ;;
+        1)
+            # Mainline Arch drivers (590+) dropped Maxwell/Pascal/Volta -> legacy 580xx branch from AUR
+            echo "Installing legacy nvidia-580xx drivers from AUR (Maxwell / Pascal / Volta)"
+            aur_install nvidia-580xx-dkms nvidia-580xx-utils lib32-nvidia-580xx-utils nvidia-580xx-settings ;;
+        2)
+            echo "Installing legacy nvidia-470xx drivers from AUR (Kepler)"
+            aur_install nvidia-470xx-dkms nvidia-470xx-utils lib32-nvidia-470xx-utils nvidia-470xx-settings ;;
+        3)
+            echo "Installing open-source nouveau/NVK stack"
+            arch-chroot /mnt pacman --noconfirm -S mesa lib32-mesa vulkan-nouveau lib32-vulkan-nouveau ;;
+    esac
+}
+
+GPU_LSPCI=$(lspci | grep -Ei 'vga|3d|display' || true)
 
 if [[ "$GPU_LSPCI" == *"NVIDIA"* ]]; then
-	echo "Detected Nvidia GPU, installing drivers..."
-	read -p "Are you using Nvidia GPU newer than GTX 10 series?(y/n)" gtx10_is_newer
-	if [[ "$gtx10_is_newer" == "y" ]]; then
-		arch-chroot /mnt pacman --noconfirm -S nvidia-zen nvidia-utils nvidia-settings # GTX 16 and newer
-	else
-		read -p "Are you using Nvidia GPU older than GTX 900 series?(y/n)" gtx900_is_older
-		if [[ "$gtx900_is_older" == "y" ]]; then
-			# for GTX 700 and older
-
-			echo "Installing Nvidia drivers for GTX 600 / GTX 700 from AUR"
-			arch-chroot /mnt useradd -m -g users -s /bin/bash aurhelper
-
-			echo "aurhelper ALL=(ALL) NOPASSWD: ALL" > /mnt/etc/sudoers.d/aurhelper
-
-			arch-chroot /mnt sudo -u aurhelper bash -c "yay -S --noconfirm nvidia-470xx-dkms nvidia-470xx-utils lib32-nvidia-470xx-utils nvidia-470xx-settings"
-
-			rm -f /mnt/etc/sudoers.d/aurhelper
-			arch-chroot /mnt userdel -r aurhelper
-
-
-		else
-			# for GTX 900, 1000
-			echo "Installing Nvidia drivers for GTX 900 / GTX 1000 series from AUR"
-			arch-chroot /mnt useradd -m -g users -s /bin/bash aurhelper
-
-			echo "aurhelper ALL=(ALL) NOPASSWD: ALL" > /mnt/etc/sudoers.d/aurhelper
-
-			arch-chroot /mnt sudo -u aurhelper bash -c "yay -S --noconfirm nvidia-580xx-dkms nvidia-580xx-utils lib32-nvidia-580xx-utils nvidia-580xx-settings"
-
-			rm -f /mnt/etc/sudoers.d/aurhelper
-			arch-chroot /mnt userdel -r aurhelper
-
-		fi
-	fi
+    echo "Detected Nvidia GPU, installing drivers..."
+    nvidia_menu
 elif [[ "$GPU_LSPCI" == *"AMD"* || "$GPU_LSPCI" == *"Radeon"* ]]; then
-	echo "Detected AMD GPU, installing drivers..."
-	arch-chroot /mnt pacman --noconfirm -S mesa vulkan-radeon lib32-mesa lib32-vulkan-radeon libva-mesa-driver libva-utils
+    echo "Detected AMD GPU, installing drivers..."
+    arch-chroot /mnt pacman --noconfirm -S mesa vulkan-radeon lib32-mesa lib32-vulkan-radeon libva-mesa-driver libva-utils
 elif [[ "$GPU_LSPCI" == *"Intel"* ]]; then
-	echo "Detected Intel GPU, installing drivers..."
-	arch-chroot /mnt pacman --noconfirm -S mesa vulkan-intel lib32-mesa lib32-vulkan-intel intel-media-driver
+    echo "Detected Intel GPU, installing drivers..."
+    arch-chroot /mnt pacman --noconfirm -S mesa vulkan-intel lib32-mesa lib32-vulkan-intel intel-media-driver
 else
-	read -p "Detected Unknown or Virtual GPU, do you want to install generic driver?(y/n)" confirm_gpu
-	if [[ "$confirm_gpu" != "y" ]]; then
-		echo "Skipping generic driver installation"
-	else
-		echo "Installing xf86-video-fbdev"
-		arch-chroot /mnt pacman --noconfirm -S xf86-video-fbdev
-	fi
+    read -rp "Detected Unknown or Virtual GPU, do you want to install generic driver? (y/n) " confirm_gpu
+    if [[ "$confirm_gpu" != "y" ]]; then
+        echo "Skipping generic driver installation"
+    else
+        echo "Installing xf86-video-fbdev"
+        arch-chroot /mnt pacman --noconfirm -S xf86-video-fbdev
+    fi
 fi
 
+# Bootloader
+if [[ "$boot_mode" == "UEFI" ]]; then
+    arrow_menu "Choose bootloader:" "GRUB (BIOS/UEFI)" "systemd-boot (UEFI only)"
+    if [[ "$MENU_CHOICE" -eq 1 ]]; then
+        grub_="1"
+    else
+        grub_="0"
+    fi
+else
+    echo "BIOS mode: systemd-boot is UEFI only, using GRUB"
+    grub_="0"
+fi
 
-
-
-read -p "Do you want use Grub or systemd-boot(UEFI only) as bootloader?(0-grub/1-systemd)" grub_
 if [[ "$grub_" != "0" ]]; then
-	# systemd-boot
-	arch-chroot /mnt bootctl install
-	
-	if [[ "$is_nvme" == "y" ]]; then
-		ROOT_UUID=$(blkid -s UUID -o value "${TARGET_DISK}p2")
-	else
-		ROOT_UUID=$(blkid -s UUID -o value "${TARGET_DISK}2")
-	fi
+    # systemd-boot (UEFI only)
+    arch-chroot /mnt bootctl install
 
+    ROOT_UUID=$(blkid -s UUID -o value "$PART2")
 
-cat <<EOF > /mnt/boot/loader/loader.conf
+    cat > /mnt/boot/loader/loader.conf <<EOF
 default  arch.conf
 timeout  4
 console-mode max
 editor   no
 EOF
 
-cat <<EOF > /mnt/boot/loader/entries/arch.conf
-title   RuDArch Linux (Zen)
-linux   /vmlinuz-linux-zen
-EOF
-
-	if [[ "$CPU" == *"Intel"* ]]; then
-		echo "initrd  /intel-ucode.img" >> /mnt/boot/loader/entries/arch.conf
-	elif [[ "$CPU" == *"AMD"* || "$CPU" == *"Advanced Micro Devices"* ]]; then
-		echo "initrd  /amd-ucode.img" >> /mnt/boot/loader/entries/arch.conf
-	fi
-
-cat <<EOF >> /mnt/boot/loader/entries/arch.conf
-initrd  /initramfs-linux-zen.img
-options root=UUID=$ROOT_UUID rw
-EOF
-
+    {
+        echo "title   RuDArch Linux (Zen)"
+        echo "linux   /vmlinuz-linux-zen"
+        if [[ -n "$UCODE" ]]; then
+            echo "initrd  /${UCODE}.img"
+        fi
+        echo "initrd  /initramfs-linux-zen.img"
+        echo "options root=UUID=$ROOT_UUID rw"
+    } > /mnt/boot/loader/entries/arch.conf
 else
-	# grub
-	arch-chroot /mnt pacman --noconfirm -S grub
-	if [[ "$boot_mode" == "UEFI" ]]; then
-		arch-chroot /mnt pacman --noconfirm -S efibootmgr
-		arch-chroot /mnt grub-install --target=x86_64-efi --efi-directory=/boot --bootloader-id=GRUB
-	else
-		# BIOS
-		CLEAN_DISK=$(echo "$TARGET_DISK" | sed 's/p[0-9]$//;s/[0-9]$//')
-		arch-chroot /mnt grub-install --target=i386-pc "$CLEAN_DISK"
-	fi
+    # grub
+    arch-chroot /mnt pacman --noconfirm -S grub
+    if [[ "$boot_mode" == "UEFI" ]]; then
+        arch-chroot /mnt pacman --noconfirm -S efibootmgr
+        arch-chroot /mnt grub-install --target=x86_64-efi --efi-directory=/boot --bootloader-id=GRUB
+    else
+        arch-chroot /mnt grub-install --target=i386-pc "$TARGET_DISK"
+    fi
 
-	arch-chroot /mnt grub-mkconfig -o /boot/grub/grub.cfg
+    arch-chroot /mnt grub-mkconfig -o /boot/grub/grub.cfg
 fi
-
-
-
-
 
 TARGET_DE="none"
 
 echo "Note: KDE will be installed with Wayland and XFCE4 with X11(Xorg)"
 
 de_menu () {
-    options=(
-        "KDE"
-        "XFCE4"
-        "None"
-    )
-    select option in "${options[@]}"; do
-        case $option in
-            "KDE")
-                TARGET_DE="KDE"
-                break
-            ;;
-            "XFCE4")
-                TARGET_DE="XFCE4"
-                break
-            ;;
-            "None")
-                return
-             ;;
-            *) 
-                echo invalid option
-            ;;
-        esac
-    done
+    arrow_menu "Choose desktop environment:" "KDE" "XFCE4" "None"
+    case $MENU_CHOICE in
+        0) TARGET_DE="KDE" ;;
+        1) TARGET_DE="XFCE4" ;;
+        2) TARGET_DE="none" ;;
+    esac
 }
 de_menu
 
-if [[ "$TARGET_DE" == "none" ]]; then
-	echo "Skipping Desktop Enviroment installation..."
+install_firefox() {
+    arch-chroot /mnt pacman --noconfirm -S firefox
+    if [[ -n "$FF_I18N" ]]; then
+        arch-chroot /mnt pacman --noconfirm -S "$FF_I18N" \
+            || echo "WARNING: $FF_I18N could not be installed, skipping"
+    fi
+}
+
+if [[ "${TARGET_DE,,}" == "none" ]]; then
+    echo "Skipping Desktop Environment installation..."
 elif [[ "$TARGET_DE" == "KDE" ]]; then
-	# KDE Plasma (Wayland)
-	echo "Installing KDE Plasma (Wayland)"
-	read -p "Do you want full KDE suite?(y/n)" kde_yn
-	if [[ kde_yn != "y" ]]; then
-		"Installing basic KDE Plasma"
-		arch-chroot /mnt pacman --noconfirm -S plasma
-	else
-		arch-chroot /mnt pacman --noconfirm-S plasma kde-applications
-	fi
-	arch-chroot /mnt systemctl enable sddm.service
-	echo "KDE Plasma installed"
-else
-	# XFCE4 (X11)
-	echo "Installing XFCE4 (X11)"
-	arch-chroot /mnt pacman --noconfirm -S xfce4 xfce4-goodies xorg lightdm lightdm-gtk-greeter
-	arch-chroot /mnt systemctl enable lightdm.service
-	echo "XFCE4 installed"
+    # KDE Plasma (Wayland)
+    echo "Installing KDE Plasma (Wayland)"
+    read -rp "Do you want full KDE suite? (y/n) " kde_yn
+    if [[ "$kde_yn" != "y" ]]; then
+        echo "Installing basic KDE Plasma"
+        arch-chroot /mnt pacman --noconfirm -S plasma-desktop
+    else
+        arch-chroot /mnt pacman --noconfirm -S plasma-desktop kde-applications
+    fi
+    arch-chroot /mnt pacman --noconfirm -S plasma-desktop ark gwenview sddm breeze breeze-gtk papirus-icon-theme kvantum konsole dolphin spectacle bluedevil
+    arch-chroot /mnt systemctl enable sddm.service
+    arch-chroot /mnt kwriteconfig6 --file /etc/xdg/kdeglobals --group Icons --key Theme Papirus
+
+    # Discover (software center) with pacman (PackageKit) and Flatpak backends
+    echo "Installing Discover"
+    arch-chroot /mnt pacman --noconfirm -S discover packagekit-qt6 flatpak
+    arch-chroot /mnt flatpak remote-add --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo \
+        || echo "WARNING: could not add Flathub remote, you can add it later"
+
+    # Firefox
+    install_firefox
+
+    # fish as the login shell for KDE
+    echo "Installing fish"
+    arch-chroot /mnt pacman --noconfirm -S fish
+    arch-chroot /mnt usermod -s /usr/bin/fish "$username"
+    # Disable the fish greeting
+    arch-chroot /mnt install -d -o "$username" -g "$username" "/home/$username/.config" "/home/$username/.config/fish"
+    echo "set -g fish_greeting" > "/mnt/home/$username/.config/fish/config.fish"
+    arch-chroot /mnt chown "$username:$username" "/home/$username/.config/fish/config.fish"
+
+    if [[ -f "$WALLPAPER" ]]; then
+        install -D "$WALLPAPER" /mnt/usr/share/backgrounds/rudarch/image.png
+    fi
+
+    # A partial plasma-org.kde.plasma.desktop-appletsrc would wipe the default
+    # panel/desktop layout, so wallpaper and the menu button icon are set once
+    # on first login via plasmashell instead.
+    cat > /mnt/usr/local/bin/rudarch-first-login <<'EOF'
+#!/bin/sh
+i=0
+while ! busctl --user status org.kde.plasmashell >/dev/null 2>&1 && [ "$i" -lt 30 ]; do
+    sleep 1; i=$((i+1))
+done
+sleep 2
+
+if [ -f /usr/share/backgrounds/rudarch/image.png ]; then
+    plasma-apply-wallpaperimage /usr/share/backgrounds/rudarch/image.png
 fi
 
+if [ -f /usr/share/pixmaps/rudarch.png ]; then
+    dbus-send --session --dest=org.kde.plasmashell --type=method_call \
+        /PlasmaShell org.kde.PlasmaShell.evaluateScript string:'
+var ps = panels();
+for (var i = 0; i < ps.length; i++) {
+    var ws = ps[i].widgets();
+    for (var j = 0; j < ws.length; j++) {
+        var w = ws[j];
+        if (w.type == "org.kde.plasma.kickoff" || w.type == "org.kde.plasma.kicker" || w.type == "org.kde.plasma.kickerdash") {
+            w.currentConfigGroup = ["General"];
+            w.writeConfig("icon", "/usr/share/pixmaps/rudarch.png");
+            w.reloadConfig();
+        }
+    }
+}'
+fi
+rm -f "$HOME/.config/autostart/rudarch-first-login.desktop"
+EOF
+    chmod 755 /mnt/usr/local/bin/rudarch-first-login
 
-echo "Choose profile"
+    arch-chroot /mnt install -d -o "$username" -g "$username" "/home/$username/.config" "/home/$username/.config/autostart"
+    cat > "/mnt/home/$username/.config/autostart/rudarch-first-login.desktop" <<'EOF'
+[Desktop Entry]
+Type=Application
+Name=RuDArch first login
+Exec=/usr/local/bin/rudarch-first-login
+X-KDE-autostart-phase=2
+EOF
+    arch-chroot /mnt chown "$username:$username" "/home/$username/.config/autostart/rudarch-first-login.desktop"
+    echo "KDE Plasma installed"
+else
+    # XFCE4 (X11)
+    echo "Installing XFCE4 (X11)"
+    arch-chroot /mnt pacman --noconfirm -S xfce4 xfce4-goodies xorg lightdm lightdm-gtk-greeter
+    arch-chroot /mnt pacman --noconfirm -S papirus-icon-theme xfce4-whiskermenu-plugin picom blueman
+    # Cosmetic only: an AUR build failure must not abort the whole installation
+    arch-chroot /mnt pacman --noconfirm --needed -S arc-gtk-theme \
+        || aur_install arc-gtk-theme \
+        || echo "WARNING: arc-gtk-theme could not be installed, skipping"
+    arch-chroot /mnt systemctl enable lightdm.service
+    install -d /mnt/usr/share/backgrounds/rudarch
+    mkdir -p /mnt/etc/xdg/xfce4/xfconf/xfce-perchannel-xml
+
+    # Firefox
+    install_firefox
+
+    # zsh as the login shell for XFCE
+    echo "Installing zsh"
+    arch-chroot /mnt pacman --noconfirm -S zsh zsh-completions zsh-autosuggestions zsh-syntax-highlighting
+    arch-chroot /mnt usermod -s /usr/bin/zsh "$username"
+    # Minimal config, so zsh doesn't start the first-run wizard
+    cat > "/mnt/home/$username/.zshrc" <<'EOF'
+HISTFILE=~/.zsh_history
+HISTSIZE=10000
+SAVEHIST=10000
+setopt SHARE_HISTORY HIST_IGNORE_DUPS AUTO_CD
+
+autoload -Uz compinit && compinit
+zstyle ':completion:*' menu select
+
+PROMPT='%F{208}%n@%m%f %F{blue}%~%f %# '
+
+bindkey '^[[H' beginning-of-line
+bindkey '^[[F' end-of-line
+bindkey '^[[3~' delete-char
+
+alias ls='ls --color=auto'
+alias ll='ls -lah --color=auto'
+alias grep='grep --color=auto'
+
+source /usr/share/zsh/plugins/zsh-autosuggestions/zsh-autosuggestions.zsh
+# must be sourced last
+source /usr/share/zsh/plugins/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh
+EOF
+    arch-chroot /mnt chown "$username:$username" "/home/$username/.zshrc"
+
+    cat > /mnt/etc/xdg/xfce4/xfconf/xfce-perchannel-xml/xsettings.xml <<'EOF'
+<?xml version="1.0" encoding="UTF-8"?>
+<channel name="xsettings" version="1.0">
+<property name="Net" type="empty">
+    <property name="IconThemeName" type="string" value="Papirus"/>
+</property>
+</channel>
+EOF
+
+    if [[ -d /usr/share/backgrounds/rudarch ]]; then
+        cp -a /usr/share/backgrounds/rudarch/. /mnt/usr/share/backgrounds/rudarch/
+    fi
+    if [[ -f "$WALLPAPER" ]]; then
+        cp "$WALLPAPER" /mnt/usr/share/backgrounds/rudarch/image.png
+    fi
+
+    cat > /mnt/etc/xdg/xfce4/xfconf/xfce-perchannel-xml/xfce4-desktop.xml <<'EOF'
+<?xml version="1.0" encoding="UTF-8"?>
+<channel name="xfce4-desktop" version="1.0">
+<property name="backdrop" type="empty">
+    <property name="screen0" type="empty">
+        <property name="monitor0" type="empty">
+            <property name="workspace0" type="empty">
+                <property name="last-image" type="string" value="/usr/share/backgrounds/rudarch/image.png"/>
+                <property name="image-style" type="int" value="5"/>
+            </property>
+        </property>
+    </property>
+</property>
+</channel>
+EOF
+
+    # Bottom panel: RuDArch logo (Whisker Menu) at the bottom-left
+    cat > /mnt/etc/xdg/xfce4/xfconf/xfce-perchannel-xml/xfce4-panel.xml <<'EOF'
+<?xml version="1.0" encoding="UTF-8"?>
+<channel name="xfce4-panel" version="1.0">
+  <property name="configver" type="int" value="2"/>
+  <property name="panels" type="array">
+    <value type="int" value="1"/>
+    <property name="panel-1" type="empty">
+      <property name="position" type="string" value="p=10;x=0;y=0"/>
+      <property name="length" type="uint" value="100"/>
+      <property name="position-locked" type="bool" value="true"/>
+      <property name="size" type="uint" value="36"/>
+      <property name="plugin-ids" type="array">
+        <value type="int" value="1"/>
+        <value type="int" value="2"/>
+        <value type="int" value="3"/>
+        <value type="int" value="4"/>
+        <value type="int" value="5"/>
+        <value type="int" value="6"/>
+        <value type="int" value="7"/>
+      </property>
+    </property>
+  </property>
+  <property name="plugins" type="empty">
+    <property name="plugin-1" type="string" value="whiskermenu"/>
+    <property name="plugin-2" type="string" value="tasklist">
+      <property name="grouping" type="uint" value="1"/>
+    </property>
+    <property name="plugin-3" type="string" value="separator">
+      <property name="expand" type="bool" value="true"/>
+      <property name="style" type="uint" value="0"/>
+    </property>
+    <property name="plugin-4" type="string" value="systray"/>
+    <property name="plugin-5" type="string" value="xkb"/>
+    <property name="plugin-6" type="string" value="clock"/>
+    <property name="plugin-7" type="string" value="actions"/>
+  </property>
+</channel>
+EOF
+
+    if [[ -f /usr/share/pixmaps/rudarch.png ]]; then
+        # Whisker Menu >= 2.8 keeps its settings in xfconf (the panel xml),
+        # NOT in whiskermenu-1.rc, so set the button icon as a plugin property.
+        sed -i 's|<property name="plugin-1" type="string" value="whiskermenu"/>|<property name="plugin-1" type="string" value="whiskermenu">\n      <property name="button-icon" type="string" value="/usr/share/pixmaps/rudarch.png"/>\n      <property name="show-button-title" type="bool" value="false"/>\n    </property>|' \
+            /mnt/etc/xdg/xfce4/xfconf/xfce-perchannel-xml/xfce4-panel.xml
+    fi
+    echo "XFCE4 installed"
+fi
+
+echo ""
 echo "Programmer: clang, go, nodejs, codeoss, make, cmake"
-echo "Gamer: steam, flatpak, gamemode"
-echo "None: nothing" 
+echo "Gamer: steam, flatpak, gamemode, discord"
+echo "None: nothing"
 
 prof_menu () {
-    options=(
-        "Programmer"
-        "Gamer"
-	"Programmer and gamer"
-        "None"
-    )
-    select option in "${options[@]}"; do
-        case $option in
-            "Programmer")
-                arch-chroot /mnt pacman --noconfirm -S clang go nodejs code make cmake
-                break
-            ;;
-            "Gamer")
-                arch-chroot /mnt pacman --noconfirm -S steam flatpak gamemode
-                break
-            ;;
-	    "Programmer and gamer")
-		arch-chroot /mnt pacman --noconfirm -S steam flatpak gamemode nodejs clang go code make cmake
-                break
-             ;;
-            "None")
-                return
-             ;;
-            *) 
-                echo invalid option
-            ;;
-        esac
-    done
+    arrow_menu "Choose profile:" "Programmer" "Gamer" "Programmer and gamer" "None"
+    case $MENU_CHOICE in
+        0) arch-chroot /mnt pacman --noconfirm -S clang go nodejs code make cmake ;;
+        1) arch-chroot /mnt pacman --noconfirm -S steam flatpak gamemode discord ;;
+        2) arch-chroot /mnt pacman --noconfirm -S steam flatpak gamemode discord nodejs clang go code make cmake ;;
+        3) ;;
+    esac
 }
 prof_menu
 
+arch-chroot /mnt pacman --noconfirm -S networkmanager
 arch-chroot /mnt systemctl enable NetworkManager.service
+arch-chroot /mnt systemctl enable bluetooth.service
+
+# Cleanup temporary AUR user
+rm -f /mnt/etc/sudoers.d/aurhelper
+arch-chroot /mnt userdel -r aurhelper || true
 
 umount -R /mnt
 
 echo "INSTALLATION FINISHED. PLEASE REBOOT YOUR PC WITH 'reboot'"
-

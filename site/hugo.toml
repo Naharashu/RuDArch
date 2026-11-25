@@ -1,0 +1,15 @@
+baseURL = 'http://localhost:1313/'
+languageCode = 'en-us'
+title = 'RuDArch Project'
+theme = "hugo-primer-blog"
+
+# Crucial configuration for Vitis theme layout styles
+[params]
+    description = "A Digital Garden for RuDArch"
+    # Add any theme-specific configurations below if you want custom links or features
+
+# Tell Hugo to explicitly look for the types of content Vitis compiles
+[taxonomies]
+    tag = "tags"
+    series = "series"
+
